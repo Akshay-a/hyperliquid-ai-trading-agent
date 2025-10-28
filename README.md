@@ -1,4 +1,4 @@
-# Nocturne: AI Trading Agent on Hyperliquid
+# AI Trading Agent on Hyperliquid
 
 This project implements an AI-powered trading agent that leverages LLM models to analyze real-time market data from HyperLiquid API, make informed trading decisions, and execute trades on the Hyperliquid decentralized exchange. The agent runs in a continuous loop, monitoring specified cryptocurrency assets at configurable intervals, using technical indicators to decide on buy/sell/hold actions, and manages positions with take-profit and stop-loss orders.
 
@@ -25,11 +25,9 @@ See the full [Architecture Documentation](docs/ARCHITECTURE.md) for subsystems, 
 
 ![Architecture Diagram](docs/architecture.png)
 
-## Nocturne Live Agents 
+##  Live Agents 
 
-- GPT-5 Pro: [Portfolio Dashboard](https://hypurrscan.io/address/0xa049db4b3dfcb25c3092891010a629d987d26113) | [Live Logs](https://35.190.43.182/logs/0xC0BE8E55f469c1a04c0F6d04356828C5793d8a9D) (Seeded with $200)
-- DeepSeek R1: [Portfolio Dashboard](https://hypurrscan.io/address/0xa663c80d86fd7c045d9927bb6344d7a5827d31db) | [Live Logs](https://35.190.43.182/logs/0x4da68B78ef40D12f378b8498120f2F5A910Af1aD) (Seeded with $100) -- PAUSED
-- Grok 4: [Portfolio Dashboard](https://hypurrscan.io/address/0x3c71f3cf324d0133558c81d42543115ef1a2be79) | [Live Logs](https://35.190.43.182/logs/0xe6a9f97f99847215ea5813812508e9354a22A2e0) (Seeded with $100) -- PAUSED
+#Todo - will update portfolio dashboard once I deploy the agent and start trading with real funds
 
 ## Structure
 - `src/main.py`: Entry point, handles user input and main trading loop.
