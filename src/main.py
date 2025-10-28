@@ -4,8 +4,10 @@ import sys
 import argparse
 import pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
-from src.agent.decision_maker import TradingAgent
-from src.indicators.taapi_client import TAAPIClient
+from src.core.algorithm_layer import AlgorithmLayer
+from src.core.llm_layer import AutonomousLLMAgent
+from src.indicators.hyperliquid_market_data import HyperliquidMarketData
+from src.risk.portfolio_risk import PortfolioRiskManager
 from src.trading.hyperliquid_api import HyperliquidAPI
 import asyncio
 import logging
@@ -64,9 +66,17 @@ def main():
     if not args.assets or not args.interval:
         parser.error("Please provide --assets and --interval, or set ASSETS and INTERVAL in .env")
 
-    taapi = TAAPIClient()
+    # Initialize new two-layer architecture
     hyperliquid = HyperliquidAPI()
-    agent = TradingAgent()
+    market_data = HyperliquidMarketData()
+    algorithm_layer = AlgorithmLayer(max_leverage=6.0, max_heat=0.25)
+    llm_agent = AutonomousLLMAgent()
+    risk_manager = PortfolioRiskManager(
+        max_leverage=6.0,
+        max_heat=0.25,
+        max_drawdown=-0.10,
+        risk_per_trade=0.015
+    )
 
 
     start_time = datetime.now(timezone.utc)
@@ -221,8 +231,16 @@ def main():
                 "recent_fills": recent_fills_struct,
             }
 
-            # Gather data for ALL assets first
-            market_sections = []
+            # Calculate portfolio risk metrics
+            risk_metrics = risk_manager.calculate_risk_metrics(
+                account_equity=account_value,
+                positions=positions,
+                active_trades=active_trades,
+                recent_fills=recent_fills_struct
+            )
+
+            # Gather data and prepare context for ALL assets using new architecture
+            market_contexts = []
             asset_prices = {}
             for asset in args.assets:
                 try:
@@ -231,139 +249,114 @@ def main():
                     if asset not in price_history:
                         price_history[asset] = deque(maxlen=60)
                     price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
-                    oi = await hyperliquid.get_open_interest(asset)
+
+                    # Get funding and OI
                     funding = await hyperliquid.get_funding_rate(asset)
+                    oi = await hyperliquid.get_open_interest(asset)
 
-                    intraday_tf = "5m"
-                    ema_series = taapi.fetch_series("ema", f"{asset}/USDT", intraday_tf, results=10, params={"period": 20}, value_key="value")
-                    macd_series = taapi.fetch_series("macd", f"{asset}/USDT", intraday_tf, results=10, value_key="valueMACD")
-                    rsi7_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 7}, value_key="value")
-                    rsi14_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 14}, value_key="value")
+                    # Fetch multi-timeframe candles from Hyperliquid
+                    candles_5m = await market_data.get_candles(asset, "5m", lookback_bars=100)
+                    candles_1h = await market_data.get_candles(asset, "1h", lookback_bars=100)
+                    candles_4h = await market_data.get_candles(asset, "4h", lookback_bars=100)
+                    candles_1d = await market_data.get_candles(asset, "1d", lookback_bars=100)
 
-                    lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 20}, key="value")
-                    lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 50}, key="value")
-                    lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 3}, key="value")
-                    lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 14}, key="value")
-                    lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", "4h", results=10, value_key="valueMACD")
-                    lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", "4h", results=10, params={"period": 14}, value_key="value")
+                    # Use Algorithm Layer to prepare context with features
+                    context = algorithm_layer.prepare_context(
+                        asset=asset,
+                        candles_5m=candles_5m.get("candles", []),
+                        candles_1h=candles_1h.get("candles", []),
+                        candles_4h=candles_4h.get("candles", []),
+                        candles_1d=candles_1d.get("candles", []),
+                        current_price=current_price,
+                        account_equity=account_value,
+                        positions=positions,
+                        active_trades=active_trades,
+                        risk_metrics=risk_metrics,
+                        funding_rate=funding,
+                        open_interest=oi
+                    )
 
-                    recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
-                    funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
+                    market_contexts.append(context)
 
-                    market_sections.append({
-                        "asset": asset,
-                        "current_price": round_or_none(current_price, 2),
-                        "intraday": {
-                            "ema20": round_or_none(ema_series[-1], 2) if ema_series else None,
-                            "macd": round_or_none(macd_series[-1], 2) if macd_series else None,
-                            "rsi7": round_or_none(rsi7_series[-1], 2) if rsi7_series else None,
-                            "rsi14": round_or_none(rsi14_series[-1], 2) if rsi14_series else None,
-                            "series": {
-                                "ema20": round_series(ema_series, 2),
-                                "macd": round_series(macd_series, 2),
-                                "rsi7": round_series(rsi7_series, 2),
-                                "rsi14": round_series(rsi14_series, 2)
-                            }
-                        },
-                        "long_term": {
-                            "ema20": round_or_none(lt_ema20, 2),
-                            "ema50": round_or_none(lt_ema50, 2),
-                            "atr3": round_or_none(lt_atr3, 2),
-                            "atr14": round_or_none(lt_atr14, 2),
-                            "macd_series": round_series(lt_macd_series, 2),
-                            "rsi_series": round_series(lt_rsi_series, 2)
-                        },
-                        "open_interest": round_or_none(oi, 2),
-                        "funding_rate": round_or_none(funding, 8),
-                        "funding_annualized_pct": funding_annualized,
-                        "recent_mid_prices": recent_mids
-                    })
                 except Exception as e:
                     add_event(f"Data gather error {asset}: {e}")
+                    import traceback
+                    add_event(f"Traceback: {traceback.format_exc()}")
                     continue
 
-            # Single LLM call with all assets
-            context_payload = OrderedDict([
-                ("invocation", {
-                    "minutes_since_start": round(minutes_since_start, 2),
-                    "current_time": datetime.now(timezone.utc).isoformat(),
-                    "invocation_count": invocation_count
-                }),
-                ("account", dashboard),
-                ("market_data", market_sections),
-                ("instructions", {
-                    "assets": args.assets,
-                    "requirement": "Decide actions for all assets and return a strict JSON array matching the schema."
-                })
-            ])
-            context = json.dumps(context_payload, default=json_default)
-            add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
-            with open("prompts.log", "a") as f:
-                f.write(f"\n\n--- {datetime.now()} - ALL ASSETS ---\n{json.dumps(context_payload, indent=2, default=json_default)}\n")
+            # Use new Autonomous LLM Agent for each asset
+            trade_decisions = []
 
-            def _is_failed_outputs(outs):
-                """Return True when outputs are missing or clearly invalid."""
-                if not isinstance(outs, dict):
-                    return True
-                decisions = outs.get("trade_decisions")
-                if not isinstance(decisions, list) or not decisions:
-                    return True
+            for ctx in market_contexts:
                 try:
-                    return all(
-                        isinstance(o, dict)
-                        and (o.get('action') == 'hold')
-                        and ('parse error' in (o.get('rationale', '').lower()))
-                        for o in decisions
-                    )
-                except Exception:
-                    return True
+                    asset = ctx.get("asset")
+                    if not ctx.get("allowed_to_trade", True):
+                        add_event(f"{asset}: Not allowed to trade - {ctx.get('reason')}")
+                        trade_decisions.append({
+                            "asset": asset,
+                            "action": "hold",
+                            "rationale": ctx.get("reason"),
+                            "allocation_usd": 0
+                        })
+                        continue
 
-            try:
-                outputs = agent.decide_trade(args.assets, context)
-                if not isinstance(outputs, dict):
-                    add_event(f"Invalid output format (expected dict): {outputs}")
-                    outputs = {}
-            except Exception as e:
-                import traceback
-                add_event(f"Agent error: {e}")
-                add_event(f"Traceback: {traceback.format_exc()}")
-                outputs = {}
+                    # Log context for debugging
+                    add_event(f"{asset}: Regime = {ctx.get('regime', {}).get('type', 'unknown')}, " +
+                             f"Features calculated: {len(ctx.get('features', {}))} feature groups")
 
-            # Retry once on failure/parse error with a stricter instruction prefix
-            if _is_failed_outputs(outputs):
-                add_event("Retrying LLM once due to invalid/parse-error output")
-                context_retry_payload = OrderedDict([
-                    ("retry_instruction", "Return ONLY the JSON array per schema with no prose."),
-                    ("original_context", context_payload)
-                ])
-                context_retry = json.dumps(context_retry_payload, default=json_default)
-                try:
-                    outputs = agent.decide_trade(args.assets, context_retry)
-                    if not isinstance(outputs, dict):
-                        add_event(f"Retry invalid format: {outputs}")
-                        outputs = {}
+                    # Let LLM Agent decide autonomously
+                    decision = llm_agent.decide(ctx)
+
+                    # Add asset to decision
+                    decision["asset"] = asset
+
+                    # Calculate allocation based on conviction and Kelly
+                    if decision.get("action") in ["buy", "sell"] and decision.get("conviction", 0) > 0:
+                        conviction = decision["conviction"]
+                        atr = ctx.get("features", {}).get("volatility", {}).get("4h", {}).get("atr")
+                        if atr:
+                            allocation = algorithm_layer.calculate_position_size(
+                                conviction=conviction,
+                                account_equity=account_value,
+                                atr=atr,
+                                current_price=asset_prices.get(asset, 0)
+                            )
+                            decision["allocation_usd"] = allocation
+                        else:
+                            decision["allocation_usd"] = 0
+                            decision["action"] = "hold"
+                            decision["rationale"] = decision.get("reasoning", "") + " [No ATR available]"
+
+                    trade_decisions.append(decision)
+
+                    reasoning = decision.get("reasoning", "")
+                    if reasoning:
+                        add_event(f"{asset} LLM Decision: {decision.get('action', 'hold')} " +
+                                 f"(conviction: {decision.get('conviction', 0)})")
+                        add_event(f"{asset} Reasoning: {reasoning[:200]}...")
+
                 except Exception as e:
                     import traceback
-                    add_event(f"Retry agent error: {e}")
-                    add_event(f"Retry traceback: {traceback.format_exc()}")
-                    outputs = {}
-
-            reasoning_text = outputs.get("reasoning", "") if isinstance(outputs, dict) else ""
-            if reasoning_text:
-                add_event(f"LLM reasoning summary: {reasoning_text}")
+                    add_event(f"Decision error {asset}: {e}")
+                    add_event(f"Traceback: {traceback.format_exc()}")
+                    trade_decisions.append({
+                        "asset": asset,
+                        "action": "hold",
+                        "rationale": f"Error: {str(e)}",
+                        "allocation_usd": 0
+                    })
 
             # Execute trades for each asset
-            for output in outputs.get("trade_decisions", []) if isinstance(outputs, dict) else []:
+            for output in trade_decisions:
                 try:
                     asset = output.get("asset")
                     if not asset or asset not in args.assets:
                         continue
                     action = output.get("action")
                     current_price = asset_prices.get(asset, 0)
-                    action = output["action"]
-                    rationale = output.get("rationale", "")
-                    if rationale:
-                        add_event(f"Decision rationale for {asset}: {rationale}")
+                    rationale = output.get("reasoning", output.get("rationale", ""))
+                    if rationale and action != "hold":
+                        add_event(f"Decision reasoning for {asset}: {rationale[:100]}...")
                     if action in ("buy", "sell"):
                         is_buy = action == "buy"
                         alloc_usd = float(output.get("allocation_usd", 0.0))
@@ -415,8 +408,6 @@ def main():
                             "opened_at": datetime.now().isoformat()
                         })
                         add_event(f"{action.upper()} {asset} amount {amount:.4f} at ~{current_price}")
-                        if rationale:
-                            add_event(f"Post-trade rationale for {asset}: {rationale}")
                         # Write to diary after confirming fills status
                         with open(diary_path, "a") as f:
                             diary_entry = {
@@ -431,21 +422,24 @@ def main():
                                 "sl_price": output.get("sl_price"),
                                 "sl_oid": sl_oid,
                                 "exit_plan": output.get("exit_plan", ""),
-                                "rationale": output.get("rationale", ""),
+                                "reasoning": rationale,
+                                "conviction": output.get("conviction", 0),
                                 "order_result": str(order),
                                 "opened_at": datetime.now(timezone.utc).isoformat(),
                                 "filled": filled
                             }
                             f.write(json.dumps(diary_entry) + "\n")
                     else:
-                        add_event(f"Hold {asset}: {output.get('rationale', '')}")
+                        reasoning = output.get('reasoning', output.get('rationale', ''))
+                        add_event(f"Hold {asset}: {reasoning[:80]}...")
                         # Write hold to diary
                         with open(diary_path, "a") as f:
                             diary_entry = {
                                 "timestamp": datetime.now().isoformat(),
                                 "asset": asset,
                                 "action": "hold",
-                                "rationale": output.get("rationale", "")
+                                "reasoning": reasoning,
+                                "conviction": output.get("conviction", 0)
                             }
                             f.write(json.dumps(diary_entry) + "\n")
                 except Exception as e:
@@ -533,23 +527,6 @@ def main():
         std = math.sqrt(var) if var > 0 else 0
         return mean / std if std > 0 else 0
 
-    async def check_exit_condition(trade, taapi, hyperliquid):
-        """Evaluate whether a given trade's exit plan triggers a close."""
-        plan = (trade.get("exit_plan") or "").lower()
-        if not plan:
-            return False
-        try:
-            if "macd" in plan and "below" in plan:
-                macd = taapi.get_indicators(trade["asset"], "4h")["macd"]["valueMACD"]
-                threshold = float(plan.split("below")[-1].strip())
-                return macd < threshold
-            if "close above ema50" in plan:
-                ema50 = taapi.get_historical_indicator("ema", f"{trade['asset']}/USDT", "4h", results=1, params={"period": 50})[0]["value"]
-                current = await hyperliquid.get_current_price(trade["asset"])
-                return current > ema50
-        except Exception:
-            return False
-        return False
 
     asyncio.run(main_async())
 

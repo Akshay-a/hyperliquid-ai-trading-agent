@@ -53,6 +53,159 @@ Populate `.env` (use `.env.example` as reference):
 ## Usage
 Run: `poetry run python src/main.py --assets BTC ETH --interval 1h`
 
+## Testing Locally with Test Funds
+
+### 1. Setup Hyperliquid Testnet Account
+
+1. **Create a new Ethereum wallet** for testing (NEVER use your main wallet):
+   ```bash
+   python -c "from eth_account import Account; acc = Account.create(); print(f'Address: {acc.address}\nPrivate Key: {acc.key.hex()}')"
+   ```
+
+2. **Get testnet funds** from Hyperliquid:
+   - Go to [Hyperliquid Testnet Faucet](https://app.hyperliquid-testnet.xyz/faucet)
+   - Connect your test wallet
+   - Request testnet USDC (you'll get ~1000 USDC for testing)
+
+3. **Configure for testnet** in your `.env`:
+   ```bash
+   # Use testnet endpoint
+   HYPERLIQUID_API_URL=https://api.hyperliquid-testnet.xyz
+   HYPERLIQUID_PRIVATE_KEY=your_test_wallet_private_key_here
+
+   # Small position sizes for testing
+   ASSETS=BTC
+   INTERVAL=5m
+
+   # LLM API keys
+   OPENROUTER_API_KEY=your_openrouter_key
+   LLM_MODEL=anthropic/claude-3.5-sonnet
+   ```
+
+### 2. Validate Installation
+
+```bash
+# Install dependencies
+poetry install
+
+# Install TA-Lib (required for indicators)
+# On Ubuntu/Debian:
+sudo apt-get install ta-lib
+
+# On macOS:
+brew install ta-lib
+
+# Or install from source: https://github.com/TA-Lib/ta-lib-python
+```
+
+### 3. Run in Test Mode
+
+```bash
+# Start with a single asset and short interval
+poetry run python src/main.py --assets BTC --interval 5m
+```
+
+### 4. Monitor Your Test Agent
+
+**Check the logs:**
+```bash
+# In another terminal
+tail -f llm_requests.log
+```
+
+**Check diary entries (trade history):**
+```bash
+# View last 10 trades
+curl http://localhost:3000/diary?limit=10 | jq
+```
+
+**Check Hyperliquid testnet dashboard:**
+- Visit: https://app.hyperliquid-testnet.xyz/
+- Connect your test wallet
+- View positions, orders, and PnL
+
+### 5. Testing Checklist
+
+- [ ] Agent starts without errors
+- [ ] Market data is fetched successfully (check logs for "Features calculated")
+- [ ] Risk limits are respected (max leverage 6x, max heat 25%)
+- [ ] LLM provides reasoning for decisions
+- [ ] Trades are executed when conviction > 0
+- [ ] Stop-loss and take-profit orders are placed
+- [ ] Agent holds when no edge is detected
+- [ ] Diary entries are logged correctly
+
+### 6. Key Test Scenarios
+
+**Test 1: Risk Limits**
+- Manually check if agent respects max leverage (6x)
+- Verify circuit breaker triggers at -10% drawdown
+
+**Test 2: Autonomous Decision Making**
+- Observe if LLM reasoning changes based on market conditions
+- Check if agent holds during ranging markets
+- Verify agent trades during trending markets with alignment
+
+**Test 3: Multi-Timeframe Analysis**
+- Add `--assets BTC ETH` to test multiple assets
+- Verify each asset gets independent analysis
+- Check if weekly/daily trends are considered (in reasoning)
+
+**Test 4: Position Management**
+- Create a position manually on testnet
+- Verify agent tracks active positions
+- Check if TP/SL orders are managed correctly
+
+### 7. Troubleshooting
+
+**Issue: "No module named 'talib'"**
+```bash
+pip install TA-Lib
+# If fails, install system library first (see step 2)
+```
+
+**Issue: "hyperliquid_market_data.py not found"**
+```bash
+# Ensure you're on the correct branch
+git checkout claude/session-011CUZ2rQ9LcrFzZeS9ms52h
+git pull origin claude/session-011CUZ2rQ9LcrFzZeS9ms52h
+```
+
+**Issue: "Rate limit exceeded"**
+- Increase `--interval` to reduce LLM API calls
+- Use a cheaper model: `LLM_MODEL=anthropic/claude-3-haiku`
+
+**Issue: "No edge detected, holding"**
+- This is NORMAL behavior! The AI agent only trades when it sees a statistical edge
+- Try during high volatility periods (US market open, macro news)
+- Check `reasoning` in logs to understand why agent is holding
+
+### 8. Safety Notes
+
+⚠️ **CRITICAL SAFETY RULES:**
+- NEVER use your main wallet private key for testing
+- ALWAYS start with testnet before mainnet
+- Test with SMALL amounts first ($10-50)
+- Monitor the first 24 hours closely
+- Set conservative risk limits (max_leverage=3.0 for first tests)
+- Keep initial account value small ($100-200 for first mainnet test)
+
+### 9. Mainnet Migration (After Successful Testing)
+
+Once you've validated on testnet:
+
+1. **Update `.env` for mainnet:**
+   ```bash
+   HYPERLIQUID_API_URL=https://api.hyperliquid.xyz
+   HYPERLIQUID_PRIVATE_KEY=your_mainnet_wallet_private_key
+   ```
+
+2. **Start with small capital** ($100-500)
+
+3. **Monitor closely for 48 hours**
+
+4. **Scale gradually** based on performance
+
 ### Local API Endpoints
 When the agent runs, it also serves a minimal API:
 - `GET /diary?limit=200` — returns recent JSONL diary entries as JSON.
