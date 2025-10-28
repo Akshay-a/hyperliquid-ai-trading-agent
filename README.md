@@ -1,6 +1,8 @@
 # Nocturne: AI Trading Agent on Hyperliquid
 
-This project implements an AI-powered trading agent that leverages LLM models to analyze real-time market data from TAAPI, make informed trading decisions, and execute trades on the Hyperliquid decentralized exchange. The agent runs in a continuous loop, monitoring specified cryptocurrency assets at configurable intervals, using technical indicators to decide on buy/sell/hold actions, and manages positions with take-profit and stop-loss orders.
+This project implements an AI-powered trading agent that leverages LLM models to analyze real-time market data from HyperLiquid API, make informed trading decisions, and execute trades on the Hyperliquid decentralized exchange. The agent runs in a continuous loop, monitoring specified cryptocurrency assets at configurable intervals, using technical indicators to decide on buy/sell/hold actions, and manages positions with take-profit and stop-loss orders.
+
+This Project is initially forked from @gajesh's https://github.com/Gajesh2007/ai-trading-agent Repo and then it was seperated out as a standalone project to build a more robust autonomous trading agent and that has more data points to perform analysis on and make better trading decisions.
 
 ## Table of Contents
 
