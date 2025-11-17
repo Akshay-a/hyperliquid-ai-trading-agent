@@ -21,6 +21,7 @@ import requests
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from src.utils.cache import cached
 
 
 class FearGreedClient:
@@ -31,6 +32,7 @@ class FearGreedClient:
         self.base_url = "https://api.alternative.me/fng/"
         self.timeout = 10
 
+    @cached(ttl_seconds=900)  # Cache for 15 minutes (updates hourly)
     def get_current(self) -> Optional[Dict[str, Any]]:
         """Get current Fear & Greed Index.
 

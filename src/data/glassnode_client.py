@@ -8,12 +8,15 @@ Fetches the most predictive on-chain indicators for crypto trading:
 - Accumulation Trend Score
 
 Reference: https://docs.glassnode.com/api/
+
+NOTE: Uses 1-hour caching since most metrics update daily/hourly.
 """
 
 import requests
 import logging
 from typing import Optional, Dict, Any
 from src.config_loader import CONFIG
+from src.utils.cache import cached
 
 
 class GlassnodeClient:
@@ -70,6 +73,7 @@ class GlassnodeClient:
             logging.error(f"Glassnode unexpected error: {e}")
             return None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour (updates daily)
     def get_sth_sopr(self, asset: str = "BTC") -> Optional[float]:
         """Get Short Term Holder SOPR (Spent Output Profit Ratio).
 
@@ -85,6 +89,7 @@ class GlassnodeClient:
         result = self._get("indicators/sopr", {"asset": asset, "i": "24h"})
         return result.get("v") if result else None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour
     def get_entities_profit_pct(self, asset: str = "BTC") -> Optional[float]:
         """Get percentage of entities (addresses) in profit.
 
@@ -103,6 +108,7 @@ class GlassnodeClient:
             return round(result["v"] * 100, 2)  # Convert to percentage
         return None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour
     def get_mvrv_ratio(self, asset: str = "BTC") -> Optional[float]:
         """Get MVRV Ratio (Market Value to Realized Value).
 
@@ -119,6 +125,7 @@ class GlassnodeClient:
         result = self._get("market/mvrv", {"asset": asset})
         return result.get("v") if result else None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour
     def get_exchange_netflow(self, asset: str = "BTC") -> Optional[float]:
         """Get net position change on exchanges (24h).
 
@@ -134,6 +141,7 @@ class GlassnodeClient:
         result = self._get("transactions/transfers_volume_exchanges_net", {"asset": asset, "i": "24h"})
         return result.get("v") if result else None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour
     def get_accumulation_trend(self, asset: str = "BTC") -> Optional[float]:
         """Get accumulation trend score.
 
@@ -149,6 +157,7 @@ class GlassnodeClient:
         result = self._get("indicators/accumulation_trend_score", {"asset": asset})
         return result.get("v") if result else None
 
+    @cached(ttl_seconds=3600)  # Cache for 1 hour
     def get_nupl(self, asset: str = "BTC") -> Optional[float]:
         """Get NUPL (Net Unrealized Profit/Loss).
 

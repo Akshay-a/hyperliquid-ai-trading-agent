@@ -12,6 +12,7 @@ import requests
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
+from src.utils.cache import cached
 
 
 class MacroDataClient:
@@ -126,6 +127,7 @@ class MacroDataClient:
             logging.error(f"Trend calculation error for {symbol}: {e}")
             return None
 
+    @cached(ttl_seconds=1800)  # Cache for 30 minutes
     def get_spx(self) -> Optional[Dict[str, Any]]:
         """Get S&P 500 index data.
 
@@ -141,6 +143,7 @@ class MacroDataClient:
             data["trend"] = self._get_simple_trend("^GSPC", period_days=7)
         return data
 
+    @cached(ttl_seconds=1800)  # Cache for 30 minutes
     def get_dxy(self) -> Optional[Dict[str, Any]]:
         """Get US Dollar Index (DXY).
 
@@ -156,6 +159,7 @@ class MacroDataClient:
             data["trend"] = self._get_simple_trend("DX-Y.NYB", period_days=7)
         return data
 
+    @cached(ttl_seconds=1800)  # Cache for 30 minutes
     def get_us10y(self) -> Optional[Dict[str, Any]]:
         """Get US 10-Year Treasury Yield.
 

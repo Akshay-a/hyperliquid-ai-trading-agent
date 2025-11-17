@@ -120,97 +120,13 @@ class CAMELTradingAgent:
             self.memory = None
 
     def _init_tools(self):
-        """Initialize tools for the agent to use."""
-        self.tools = []
+        """Initialize tools for the agent to use.
 
-        # Tool 1: Fetch TAAPI indicator
-        def fetch_taapi_indicator(
-            indicator: str,
-            symbol: str,
-            interval: str,
-            period: Optional[int] = None,
-            backtrack: Optional[int] = None,
-        ) -> Dict[str, Any]:
-            """Fetch technical indicator from TAAPI.
-
-            Args:
-                indicator: Indicator name (e.g., 'rsi', 'macd', 'ema')
-                symbol: Trading pair (e.g., 'BTC/USDT')
-                interval: Timeframe (e.g., '5m', '4h')
-                period: Indicator period (optional)
-                backtrack: Historical bars back (optional)
-
-            Returns:
-                Dict with indicator data
-            """
-            try:
-                params = {}
-                if period is not None:
-                    params["period"] = period
-                if backtrack is not None:
-                    params["backtrack"] = backtrack
-
-                result = self.taapi.fetch_value(indicator, symbol, interval, params)
-                return {"success": True, "value": result, "indicator": indicator}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-
-        # Tool 2: Fetch on-chain metrics
-        def fetch_onchain_metrics(asset: str = "BTC") -> Dict[str, Any]:
-            """Fetch on-chain metrics from Glassnode.
-
-            Args:
-                asset: Asset symbol (default: BTC)
-
-            Returns:
-                Dict with on-chain metrics
-            """
-            try:
-                metrics = self.glassnode.get_all_metrics(asset)
-                return {"success": True, "metrics": metrics, "asset": asset}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-
-        # Tool 3: Fetch Fear & Greed Index
-        def fetch_fear_greed() -> Dict[str, Any]:
-            """Fetch Crypto Fear & Greed Index.
-
-            Returns:
-                Dict with sentiment data
-            """
-            try:
-                signal = self.feargreed.get_sentiment_signal()
-                if signal:
-                    return {"success": True, **signal}
-                return {"success": False, "error": "No data available"}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-
-        # Tool 4: Fetch macro data
-        def fetch_macro_data() -> Dict[str, Any]:
-            """Fetch macro market data (SPX, DXY, US10Y).
-
-            Returns:
-                Dict with macro indicators and risk assessment
-            """
-            try:
-                macro = self.macro.get_all_macro()
-                return {"success": True, **macro}
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-
-        # Register tools with CAMEL
-        try:
-            self.tools = [
-                FunctionTool(fetch_taapi_indicator),
-                FunctionTool(fetch_onchain_metrics),
-                FunctionTool(fetch_fear_greed),
-                FunctionTool(fetch_macro_data),
-            ]
-            logging.info(f"Initialized {len(self.tools)} tools for CAMEL agent")
-        except Exception as e:
-            logging.error(f"Failed to initialize tools: {e}")
-            self.tools = []
+        NOTE: Tools are optional since orchestrator provides all data in context.
+        Kept minimal for emergency data verification only.
+        """
+        self.tools = []  # No tools - all data comes from orchestrator context
+        logging.info("Agent configured without tools (all data from orchestrator)")
 
     def _init_agent(self):
         """Initialize the CAMEL ChatAgent with system message."""
@@ -304,35 +220,59 @@ For each asset, analyze in this order:
    - Did similar setups work or fail?
    - Are we repeating a mistake?
 
+## Leverage Calculation
+Calculate dynamic leverage for each trade using this formula:
+1. Start with base leverage = {self.leverage_min}
+2. Add for confluence:
+   - 8+ aligned signals → max leverage ({self.leverage_max})
+   - 6-7 aligned signals → mid leverage ({(self.leverage_min + self.leverage_max) / 2})
+   - < 6 signals → min leverage ({self.leverage_min})
+3. Adjust for volatility:
+   - If 4h ATR > recent average ATR × 1.5 → multiply by 0.6 (reduce 40%)
+   - If 4h ATR > recent average ATR × 1.2 → multiply by 0.8 (reduce 20%)
+4. Adjust for macro:
+   - Risk-off environment → multiply by 0.7 (reduce 30%)
+   - Moderate risk-off → multiply by 0.85 (reduce 15%)
+5. Ensure final leverage is between {self.leverage_min}x and {self.leverage_max}x
+
+## Confluence Score Calculation
+Count aligned bullish/bearish signals (max 10):
+- HTF trend (EMA20 > EMA50 = +1, vice versa = -1)
+- LTF trend (EMA20 slope = +1 or -1)
+- MACD regime (bullish/bearish = +1 or -1)
+- RSI (momentum = +1 or -1)
+- Order book imbalance (> 0.3 = +1, < -0.3 = -1)
+- On-chain SOPR (> 1.0 = +1, < 1.0 = -1)
+- Fear & Greed (< 30 = +1 contrarian, > 70 = -1)
+- Macro risk (risk-on = +1, risk-off = -1)
+- Funding rate (favorable = +1, unfavorable = -1)
+- Recent price action (HH/HL = +1, LH/LL = -1)
+
+Absolute value of sum = confluence score (0-10)
+
 ## Output Format
 You MUST return a strict JSON object with:
 {{
-  "reasoning": "Detailed analysis covering macro, on-chain, HTF, LTF, microstructure",
+  "reasoning": "Detailed analysis covering macro, on-chain, HTF, LTF, microstructure, confluence score, leverage calculation",
   "trade_decisions": [
     {{
       "asset": "BTC",
       "action": "buy" | "sell" | "hold",
       "allocation_usd": <notional size>,
-      "leverage": <dynamic leverage 3-10x>,
+      "leverage": <calculated dynamic leverage>,
       "tp_price": <take profit level>,
       "sl_price": <stop loss level>,
       "exit_plan": "Specific invalidation triggers and conditions",
       "rationale": "Why this decision with current market state",
-      "confidence": <1-10 score>
+      "confidence": <1-10 score>,
+      "confluence_score": <0-10 number of aligned signals>
     }}
   ]
 }}
 
-## Available Tools
-- `fetch_taapi_indicator`: Get any technical indicator
-- `fetch_onchain_metrics`: Get Glassnode on-chain data
-- `fetch_fear_greed`: Get sentiment index
-- `fetch_macro_data`: Get SPX/DXY/US10Y trends
-
-Use tools aggressively to gather data before deciding. Don't guess - verify with data.
-
 Remember: You are a professional trader managing real capital. Every decision must be defensible with data.
 Your goal is consistent profitability, not gambling. When in doubt, stay flat (HOLD).
+All data you need is provided in the context. No tools available - use what you have.
 """
 
     def decide_trade(self, assets: List[str], context: str) -> Dict[str, Any]:
