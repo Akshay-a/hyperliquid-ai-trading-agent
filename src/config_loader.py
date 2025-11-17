@@ -68,6 +68,17 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
     return values or default
 
 
+def _get_float(name: str, default: float | None = None) -> float | None:
+    """Fetch a float environment variable."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid float for {name}: {raw}") from exc
+
+
 CONFIG = {
     "taapi_api_key": _get_env("TAAPI_API_KEY", required=True),
     "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY") or _get_env("LIGHTER_PRIVATE_KEY"),
@@ -93,4 +104,15 @@ CONFIG = {
     # API server
     "api_host": _get_env("API_HOST", "0.0.0.0"),
     "api_port": _get_env("APP_PORT") or _get_env("API_PORT") or "3000",
+    # External data sources
+    "glassnode_api_key": _get_env("GLASSNODE_API_KEY"),  # Optional
+    # Trading configuration
+    "position_size_pct": _get_float("POSITION_SIZE_PCT", 2.0),
+    "leverage_min": _get_float("LEVERAGE_MIN", 3.0),
+    "leverage_max": _get_float("LEVERAGE_MAX", 10.0),
+    # CAMEL agent configuration
+    "use_camel_agent": _get_bool("USE_CAMEL_AGENT", True),
+    "memory_trades_count": _get_int("MEMORY_TRADES_COUNT", 25),
+    # Sanitizer model
+    "sanitize_model": _get_env("SANITIZE_MODEL", "openai/gpt-4o-mini"),
 }

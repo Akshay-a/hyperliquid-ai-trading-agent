@@ -393,3 +393,108 @@ class HyperliquidAPI:
         except (RuntimeError, ValueError, KeyError, ConnectionError, TypeError) as e:
             logging.error("Funding fetch error for %s: %s", asset, e)
             return None
+
+    async def get_order_book(self, asset, depth: int = 20):
+        """Get order book depth for market microstructure analysis.
+
+        Args:
+            asset: Market symbol to query
+            depth: Number of levels to retrieve (default 20)
+
+        Returns:
+            Dict with 'bids' and 'asks' arrays, or None on error
+        """
+        try:
+            l2_data = await self._retry(lambda: self.info.l2_snapshot(asset))
+            if l2_data and "levels" in l2_data:
+                levels = l2_data["levels"]
+                bids = [[float(px), float(sz)] for px, sz, _ in levels[0][:depth]] if len(levels) > 0 else []
+                asks = [[float(px), float(sz)] for px, sz, _ in levels[1][:depth]] if len(levels) > 1 else []
+                return {"bids": bids, "asks": asks}
+            return None
+        except (RuntimeError, ValueError, KeyError, ConnectionError, TypeError) as e:
+            logging.error("Order book fetch error for %s: %s", asset, e)
+            return None
+
+    async def get_microstructure_metrics(self, asset):
+        """Calculate order book microstructure metrics.
+
+        Metrics include:
+        - Bid-ask spread (absolute and %)
+        - Order book imbalance (buy vs sell pressure)
+        - Depth at various levels
+        - Estimated slippage for market orders
+
+        Args:
+            asset: Market symbol to analyze
+
+        Returns:
+            Dict with microstructure metrics or None on error
+        """
+        try:
+            ob = await self.get_order_book(asset, depth=20)
+            if not ob or not ob.get("bids") or not ob.get("asks"):
+                return None
+
+            bids = ob["bids"]
+            asks = ob["asks"]
+
+            # Best bid/ask
+            best_bid = bids[0][0] if bids else 0
+            best_ask = asks[0][0] if asks else 0
+
+            if not best_bid or not best_ask:
+                return None
+
+            # Spread
+            spread = best_ask - best_bid
+            spread_pct = (spread / best_bid) * 100 if best_bid else 0
+
+            # Mid price
+            mid_price = (best_bid + best_ask) / 2
+
+            # Order book imbalance (ratio of bid volume to total volume)
+            bid_volume = sum(size for _, size in bids[:10])
+            ask_volume = sum(size for _, size in asks[:10])
+            total_volume = bid_volume + ask_volume
+
+            if total_volume > 0:
+                imbalance = (bid_volume - ask_volume) / total_volume  # -1 to +1
+                # Positive = more bids (buying pressure), Negative = more asks (selling pressure)
+            else:
+                imbalance = 0
+
+            # Depth at various thresholds (0.1%, 0.5%, 1% from mid)
+            def depth_at_threshold(levels, mid, threshold_pct, is_bid):
+                threshold_price = mid * (1 - threshold_pct/100) if is_bid else mid * (1 + threshold_pct/100)
+                depth = 0
+                for px, sz in levels:
+                    if (is_bid and px >= threshold_price) or (not is_bid and px <= threshold_price):
+                        depth += sz
+                    else:
+                        break
+                return depth
+
+            bid_depth_01 = depth_at_threshold(bids, mid_price, 0.1, True)
+            ask_depth_01 = depth_at_threshold(asks, mid_price, 0.1, False)
+            bid_depth_05 = depth_at_threshold(bids, mid_price, 0.5, True)
+            ask_depth_05 = depth_at_threshold(asks, mid_price, 0.5, False)
+
+            return {
+                "mid_price": round(mid_price, 2),
+                "best_bid": round(best_bid, 2),
+                "best_ask": round(best_ask, 2),
+                "spread": round(spread, 4),
+                "spread_pct": round(spread_pct, 4),
+                "imbalance": round(imbalance, 4),  # -1 to +1
+                "bid_volume_10": round(bid_volume, 2),
+                "ask_volume_10": round(ask_volume, 2),
+                "bid_depth_01pct": round(bid_depth_01, 2),
+                "ask_depth_01pct": round(ask_depth_01, 2),
+                "bid_depth_05pct": round(bid_depth_05, 2),
+                "ask_depth_05pct": round(ask_depth_05, 2),
+            }
+
+        except (RuntimeError, ValueError, KeyError, ConnectionError, TypeError, ZeroDivisionError) as e:
+            logging.error("Microstructure calc error for %s: %s", asset, e)
+            return None

@@ -4,7 +4,22 @@ import sys
 import argparse
 import pathlib
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
+
+# Legacy agent import
 from src.agent.decision_maker import TradingAgent
+
+# CAMEL agent imports
+try:
+    from src.agent.camel_agent import CAMELTradingAgent
+    from src.data.orchestrator import DataOrchestrator
+    from src.data.glassnode_client import GlassnodeClient
+    from src.data.feargreed_client import FearGreedClient
+    from src.data.macro_client import MacroDataClient
+    CAMEL_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"CAMEL components not available: {e}")
+    CAMEL_AVAILABLE = False
+
 from src.indicators.taapi_client import TAAPIClient
 from src.trading.hyperliquid_api import HyperliquidAPI
 import asyncio
@@ -66,7 +81,30 @@ def main():
 
     taapi = TAAPIClient()
     hyperliquid = HyperliquidAPI()
-    agent = TradingAgent()
+
+    # Initialize agent (CAMEL or legacy based on config)
+    use_camel = CONFIG.get("use_camel_agent", True) and CAMEL_AVAILABLE
+
+    if use_camel:
+        logging.info("🐫 Initializing CAMEL-powered trading agent")
+        agent = CAMELTradingAgent()
+
+        # Initialize external data clients
+        glassnode = GlassnodeClient()
+        feargreed = FearGreedClient()
+        macro = MacroDataClient()
+
+        # Initialize data orchestrator for parallel fetching
+        orchestrator = DataOrchestrator(taapi, glassnode, feargreed, macro)
+
+        logging.info("CAMEL agent and orchestrator initialized successfully")
+    else:
+        if not CAMEL_AVAILABLE:
+            logging.warning("CAMEL not available, using legacy agent")
+        else:
+            logging.info("Using legacy TradingAgent (CAMEL disabled in config)")
+        agent = TradingAgent()
+        orchestrator = None
 
 
     start_time = datetime.now(timezone.utc)
@@ -221,66 +259,120 @@ def main():
                 "recent_fills": recent_fills_struct,
             }
 
-            # Gather data for ALL assets first
+            # Gather data for ALL assets (using orchestrator if CAMEL, else legacy)
             market_sections = []
             asset_prices = {}
-            for asset in args.assets:
+
+            if use_camel and orchestrator:
+                # Use orchestrator for parallel, enhanced data fetching
                 try:
-                    current_price = await hyperliquid.get_current_price(asset)
-                    asset_prices[asset] = current_price
-                    if asset not in price_history:
-                        price_history[asset] = deque(maxlen=60)
-                    price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
-                    oi = await hyperliquid.get_open_interest(asset)
-                    funding = await hyperliquid.get_funding_rate(asset)
+                    enhanced_context = await orchestrator.fetch_enhanced_context(
+                        assets=args.assets,
+                        hyperliquid_api=hyperliquid,
+                        account_state=dashboard,
+                        recent_diary=recent_diary,
+                    )
 
-                    intraday_tf = "5m"
-                    ema_series = taapi.fetch_series("ema", f"{asset}/USDT", intraday_tf, results=10, params={"period": 20}, value_key="value")
-                    macd_series = taapi.fetch_series("macd", f"{asset}/USDT", intraday_tf, results=10, value_key="valueMACD")
-                    rsi7_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 7}, value_key="value")
-                    rsi14_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 14}, value_key="value")
+                    # Extract asset prices and build market sections
+                    for asset_ctx in enhanced_context["market"]["assets"]:
+                        asset = asset_ctx["asset"]
+                        current_price = asset_ctx["price"]
+                        asset_prices[asset] = current_price
 
-                    lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 20}, key="value")
-                    lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 50}, key="value")
-                    lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 3}, key="value")
-                    lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 14}, key="value")
-                    lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", "4h", results=10, value_key="valueMACD")
-                    lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", "4h", results=10, params={"period": 14}, value_key="value")
+                        # Update price history
+                        if asset not in price_history:
+                            price_history[asset] = deque(maxlen=60)
+                        price_history[asset].append({
+                            "t": datetime.now(timezone.utc).isoformat(),
+                            "mid": round_or_none(current_price, 2)
+                        })
 
-                    recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
-                    funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
+                        recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
+                        funding = asset_ctx["funding_rate"]
+                        funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
 
-                    market_sections.append({
-                        "asset": asset,
-                        "current_price": round_or_none(current_price, 2),
-                        "intraday": {
-                            "ema20": round_or_none(ema_series[-1], 2) if ema_series else None,
-                            "macd": round_or_none(macd_series[-1], 2) if macd_series else None,
-                            "rsi7": round_or_none(rsi7_series[-1], 2) if rsi7_series else None,
-                            "rsi14": round_or_none(rsi14_series[-1], 2) if rsi14_series else None,
-                            "series": {
-                                "ema20": round_series(ema_series, 2),
-                                "macd": round_series(macd_series, 2),
-                                "rsi7": round_series(rsi7_series, 2),
-                                "rsi14": round_series(rsi14_series, 2)
-                            }
-                        },
-                        "long_term": {
-                            "ema20": round_or_none(lt_ema20, 2),
-                            "ema50": round_or_none(lt_ema50, 2),
-                            "atr3": round_or_none(lt_atr3, 2),
-                            "atr14": round_or_none(lt_atr14, 2),
-                            "macd_series": round_series(lt_macd_series, 2),
-                            "rsi_series": round_series(lt_rsi_series, 2)
-                        },
-                        "open_interest": round_or_none(oi, 2),
-                        "funding_rate": round_or_none(funding, 8),
-                        "funding_annualized_pct": funding_annualized,
-                        "recent_mid_prices": recent_mids
-                    })
+                        # Build market section with enhanced data
+                        market_section = {
+                            "asset": asset,
+                            "current_price": round_or_none(current_price, 2),
+                            "funding_rate": round_or_none(funding, 8),
+                            "funding_annualized_pct": funding_annualized,
+                            "open_interest": asset_ctx["open_interest"],
+                            "recent_mid_prices": recent_mids,
+                            "ltf": asset_ctx.get("ltf", {}),  # 5m data
+                            "htf": asset_ctx.get("htf", {}),  # 4h data
+                            "microstructure": asset_ctx.get("microstructure"),  # Order book
+                            "onchain": asset_ctx.get("onchain"),  # Glassnode data (if available)
+                        }
+
+                        market_sections.append(market_section)
+
+                    add_event(f"Fetched enhanced data in {enhanced_context['fetch_time_ms']:.0f}ms")
+
                 except Exception as e:
-                    add_event(f"Data gather error {asset}: {e}")
-                    continue
+                    add_event(f"Orchestrator error: {e}, falling back to basic fetch")
+                    # Fallback to legacy approach
+                    use_camel = False
+
+            if not use_camel or not orchestrator:
+                # Legacy data gathering (sequential, basic indicators)
+                for asset in args.assets:
+                    try:
+                        current_price = await hyperliquid.get_current_price(asset)
+                        asset_prices[asset] = current_price
+                        if asset not in price_history:
+                            price_history[asset] = deque(maxlen=60)
+                        price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
+                        oi = await hyperliquid.get_open_interest(asset)
+                        funding = await hyperliquid.get_funding_rate(asset)
+
+                        intraday_tf = "5m"
+                        ema_series = taapi.fetch_series("ema", f"{asset}/USDT", intraday_tf, results=10, params={"period": 20}, value_key="value")
+                        macd_series = taapi.fetch_series("macd", f"{asset}/USDT", intraday_tf, results=10, value_key="valueMACD")
+                        rsi7_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 7}, value_key="value")
+                        rsi14_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 14}, value_key="value")
+
+                        lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 20}, key="value")
+                        lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 50}, key="value")
+                        lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 3}, key="value")
+                        lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 14}, key="value")
+                        lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", "4h", results=10, value_key="valueMACD")
+                        lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", "4h", results=10, params={"period": 14}, value_key="value")
+
+                        recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
+                        funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
+
+                        market_sections.append({
+                            "asset": asset,
+                            "current_price": round_or_none(current_price, 2),
+                            "intraday": {
+                                "ema20": round_or_none(ema_series[-1], 2) if ema_series else None,
+                                "macd": round_or_none(macd_series[-1], 2) if macd_series else None,
+                                "rsi7": round_or_none(rsi7_series[-1], 2) if rsi7_series else None,
+                                "rsi14": round_or_none(rsi14_series[-1], 2) if rsi14_series else None,
+                                "series": {
+                                    "ema20": round_series(ema_series, 2),
+                                    "macd": round_series(macd_series, 2),
+                                    "rsi7": round_series(rsi7_series, 2),
+                                    "rsi14": round_series(rsi14_series, 2)
+                                }
+                            },
+                            "long_term": {
+                                "ema20": round_or_none(lt_ema20, 2),
+                                "ema50": round_or_none(lt_ema50, 2),
+                                "atr3": round_or_none(lt_atr3, 2),
+                                "atr14": round_or_none(lt_atr14, 2),
+                                "macd_series": round_series(lt_macd_series, 2),
+                                "rsi_series": round_series(lt_rsi_series, 2)
+                            },
+                            "open_interest": round_or_none(oi, 2),
+                            "funding_rate": round_or_none(funding, 8),
+                            "funding_annualized_pct": funding_annualized,
+                            "recent_mid_prices": recent_mids
+                        })
+                    except Exception as e:
+                        add_event(f"Data gather error {asset}: {e}")
+                        continue
 
             # Single LLM call with all assets
             context_payload = OrderedDict([
@@ -296,6 +388,13 @@ def main():
                     "requirement": "Decide actions for all assets and return a strict JSON array matching the schema."
                 })
             ])
+
+            # Add enhanced context if using CAMEL
+            if use_camel and orchestrator and 'enhanced_context' in locals():
+                if enhanced_context.get("market", {}).get("sentiment"):
+                    context_payload["sentiment"] = enhanced_context["market"]["sentiment"]
+                if enhanced_context.get("market", {}).get("macro"):
+                    context_payload["macro"] = enhanced_context["market"]["macro"]
             context = json.dumps(context_payload, default=json_default)
             add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
             with open("prompts.log", "a") as f:
