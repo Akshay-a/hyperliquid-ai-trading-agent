@@ -15,6 +15,8 @@ try:
     from src.data.glassnode_client import GlassnodeClient
     from src.data.feargreed_client import FearGreedClient
     from src.data.macro_client import MacroDataClient
+    from src.utils.risk_manager import RiskManager
+    from src.utils.signal_calculator import validate_trade_decision
     CAMEL_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"CAMEL components not available: {e}")
@@ -95,9 +97,23 @@ def main():
         macro = MacroDataClient()
 
         # Initialize data orchestrator for parallel fetching
-        orchestrator = DataOrchestrator(taapi, glassnode, feargreed, macro)
+        leverage_min = CONFIG.get("leverage_min", 3.0)
+        leverage_max = CONFIG.get("leverage_max", 10.0)
+        orchestrator = DataOrchestrator(
+            taapi, glassnode, feargreed, macro,
+            leverage_min=leverage_min,
+            leverage_max=leverage_max
+        )
 
-        logging.info("CAMEL agent and orchestrator initialized successfully")
+        # Initialize risk manager for portfolio-level risk management
+        risk_manager = RiskManager(
+            max_portfolio_heat=CONFIG.get("max_portfolio_heat", 0.30),  # 30% default
+            max_positions=CONFIG.get("max_positions", 3),
+            leverage_min=leverage_min,
+            leverage_max=leverage_max,
+        )
+
+        logging.info("CAMEL agent, orchestrator, and risk manager initialized successfully")
     else:
         if not CAMEL_AVAILABLE:
             logging.warning("CAMEL not available, using legacy agent")
@@ -105,6 +121,7 @@ def main():
             logging.info("Using legacy TradingAgent (CAMEL disabled in config)")
         agent = TradingAgent()
         orchestrator = None
+        risk_manager = None
 
 
     start_time = datetime.now(timezone.utc)
@@ -264,55 +281,44 @@ def main():
             asset_prices = {}
 
             if use_camel and orchestrator:
-                # Use orchestrator for parallel, enhanced data fetching
+                # Use orchestrator for parallel data fetching with pre-computed signals
                 try:
-                    enhanced_context = await orchestrator.fetch_enhanced_context(
+                    # Fetch pre-computed signals (new optimized context engineering)
+                    signals_context = await orchestrator.fetch_signals_for_assets(
                         assets=args.assets,
                         hyperliquid_api=hyperliquid,
                         account_state=dashboard,
+                        open_positions=enriched_positions,  # Pass current positions
                         recent_diary=recent_diary,
                     )
 
-                    # Extract asset prices and build market sections
-                    for asset_ctx in enhanced_context["market"]["assets"]:
-                        asset = asset_ctx["asset"]
-                        current_price = asset_ctx["price"]
-                        asset_prices[asset] = current_price
+                    # Extract asset prices for tracking
+                    for signal in signals_context.get("trade_signals", []):
+                        asset = signal.get("asset")
+                        current_price = signal.get("current_price")
+                        if asset and current_price:
+                            asset_prices[asset] = current_price
 
-                        # Update price history
-                        if asset not in price_history:
-                            price_history[asset] = deque(maxlen=60)
-                        price_history[asset].append({
-                            "t": datetime.now(timezone.utc).isoformat(),
-                            "mid": round_or_none(current_price, 2)
-                        })
+                            # Update price history
+                            if asset not in price_history:
+                                price_history[asset] = deque(maxlen=60)
+                            price_history[asset].append({
+                                "t": datetime.now(timezone.utc).isoformat(),
+                                "mid": round_or_none(current_price, 2)
+                            })
 
-                        recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
-                        funding = asset_ctx["funding_rate"]
-                        funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
+                    add_event(f"Fetched & pre-computed signals in {signals_context.get('fetch_time_ms', 0):.0f}ms")
 
-                        # Build market section with enhanced data
-                        market_section = {
-                            "asset": asset,
-                            "current_price": round_or_none(current_price, 2),
-                            "funding_rate": round_or_none(funding, 8),
-                            "funding_annualized_pct": funding_annualized,
-                            "open_interest": asset_ctx["open_interest"],
-                            "recent_mid_prices": recent_mids,
-                            "ltf": asset_ctx.get("ltf", {}),  # 5m data
-                            "htf": asset_ctx.get("htf", {}),  # 4h data
-                            "microstructure": asset_ctx.get("microstructure"),  # Order book
-                            "onchain": asset_ctx.get("onchain"),  # Glassnode data (if available)
-                        }
-
-                        market_sections.append(market_section)
-
-                    add_event(f"Fetched enhanced data in {enhanced_context['fetch_time_ms']:.0f}ms")
+                    # Store for later use (agent will receive full context)
+                    enhanced_context = signals_context
 
                 except Exception as e:
-                    add_event(f"Orchestrator error: {e}, falling back to basic fetch")
+                    import traceback
+                    add_event(f"Orchestrator error: {e}")
+                    logging.error(f"Orchestrator traceback: {traceback.format_exc()}")
                     # Fallback to legacy approach
                     use_camel = False
+                    enhanced_context = None
 
             if not use_camel or not orchestrator:
                 # Legacy data gathering (sequential, basic indicators)
@@ -389,16 +395,28 @@ def main():
                 })
             ])
 
-            # Add enhanced context if using CAMEL
-            if use_camel and orchestrator and 'enhanced_context' in locals():
-                if enhanced_context.get("market", {}).get("sentiment"):
-                    context_payload["sentiment"] = enhanced_context["market"]["sentiment"]
-                if enhanced_context.get("market", {}).get("macro"):
-                    context_payload["macro"] = enhanced_context["market"]["macro"]
-            context = json.dumps(context_payload, default=json_default)
-            add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
-            with open("prompts.log", "a") as f:
-                f.write(f"\n\n--- {datetime.now()} - ALL ASSETS ---\n{json.dumps(context_payload, indent=2, default=json_default)}\n")
+            # Prepare context for agent (different format for CAMEL vs legacy)
+            if use_camel and orchestrator and 'enhanced_context' in locals() and enhanced_context:
+                # NEW: Use pre-computed signals context (dict, not JSON string)
+                context = enhanced_context  # Pass dict directly to CAMEL agent
+                add_event(f"Using pre-computed signals context with {len(enhanced_context.get('trade_signals', []))} signals")
+
+                # Log for debugging
+                with open("prompts.log", "a") as f:
+                    f.write(f"\n\n--- {datetime.now()} - PRE-COMPUTED SIGNALS ---\n{json.dumps(enhanced_context, indent=2, default=json_default)}\n")
+            else:
+                # LEGACY: Build traditional context (for backward compatibility)
+                if use_camel and orchestrator and 'enhanced_context' in locals():
+                    if enhanced_context.get("market", {}).get("sentiment"):
+                        context_payload["sentiment"] = enhanced_context["market"]["sentiment"]
+                    if enhanced_context.get("market", {}).get("macro"):
+                        context_payload["macro"] = enhanced_context["market"]["macro"]
+
+                context = json.dumps(context_payload, default=json_default)
+                add_event(f"Using legacy context: {len(context)} chars for {len(args.assets)} assets")
+
+                with open("prompts.log", "a") as f:
+                    f.write(f"\n\n--- {datetime.now()} - LEGACY CONTEXT ---\n{json.dumps(context_payload, indent=2, default=json_default)}\n")
 
             def _is_failed_outputs(outs):
                 """Return True when outputs are missing or clearly invalid."""
@@ -428,8 +446,8 @@ def main():
                 add_event(f"Traceback: {traceback.format_exc()}")
                 outputs = {}
 
-            # Retry once on failure/parse error with a stricter instruction prefix
-            if _is_failed_outputs(outputs):
+            # Retry once on failure (only for legacy mode)
+            if _is_failed_outputs(outputs) and not (use_camel and isinstance(context, dict)):
                 add_event("Retrying LLM once due to invalid/parse-error output")
                 context_retry_payload = OrderedDict([
                     ("retry_instruction", "Return ONLY the JSON array per schema with no prose."),
@@ -463,14 +481,59 @@ def main():
                     rationale = output.get("rationale", "")
                     if rationale:
                         add_event(f"Decision rationale for {asset}: {rationale}")
+
                     if action in ("buy", "sell"):
                         is_buy = action == "buy"
                         alloc_usd = float(output.get("allocation_usd", 0.0))
+                        leverage = float(output.get("leverage", leverage_min if 'leverage_min' in locals() else 3.0))
+
                         if alloc_usd <= 0:
                             add_event(f"Holding {asset}: zero/negative allocation")
                             continue
+
+                        # RISK MANAGER: Check if we can open this position
+                        if use_camel and risk_manager:
+                            # Calculate position exposure (allocation × leverage)
+                            position_exposure = alloc_usd * leverage
+
+                            # Get account value for risk calculations
+                            account_value = dashboard.get("account_value", 0)
+
+                            # Check if position is allowed
+                            can_open, reason = risk_manager.can_open_position(
+                                current_positions=enriched_positions,
+                                account_value=account_value,
+                                new_position_size=position_exposure
+                            )
+
+                            if not can_open:
+                                add_event(f"❌ Trade blocked by risk manager: {reason}")
+                                continue
+
+                            # Adjust position size if needed to stay within limits
+                            adjusted_exposure = risk_manager.adjust_position_size(
+                                desired_size=position_exposure,
+                                current_positions=enriched_positions,
+                                account_value=account_value
+                            )
+
+                            # If position was reduced, update allocation
+                            if adjusted_exposure < position_exposure:
+                                old_alloc = alloc_usd
+                                alloc_usd = adjusted_exposure / leverage
+                                add_event(f"⚠️  Position size reduced by risk manager: ${old_alloc:.2f} → ${alloc_usd:.2f}")
+
                         amount = alloc_usd / current_price
 
+                        # VALIDATION: Apply bounds checking (redundant with CAMEL agent, but safety net)
+                        validated_output = validate_trade_decision(
+                            decision=output,
+                            current_price=current_price,
+                            leverage_min=leverage_min if 'leverage_min' in locals() else 3.0,
+                            leverage_max=leverage_max if 'leverage_max' in locals() else 10.0,
+                        ) if use_camel else output
+
+                        # Execute trade
                         order = await hyperliquid.place_buy_order(asset, amount) if is_buy else await hyperliquid.place_sell_order(asset, amount)
                         # Confirm by checking recent fills for this asset shortly after placing
                         await asyncio.sleep(1)

@@ -113,6 +113,9 @@ CONFIG = {
     # CAMEL agent configuration
     "use_camel_agent": _get_bool("USE_CAMEL_AGENT", True),
     "memory_trades_count": _get_int("MEMORY_TRADES_COUNT", 25),
+    # Risk management
+    "max_portfolio_heat": _get_float("MAX_PORTFOLIO_HEAT", 0.30),  # 30% default
+    "max_positions": _get_int("MAX_POSITIONS", 3),
     # Sanitizer model
     "sanitize_model": _get_env("SANITIZE_MODEL", "openai/gpt-4o-mini"),
 }

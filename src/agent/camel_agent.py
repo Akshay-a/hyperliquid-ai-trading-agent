@@ -35,6 +35,7 @@ from src.indicators.taapi_client import TAAPIClient
 from src.data.glassnode_client import GlassnodeClient
 from src.data.feargreed_client import FearGreedClient
 from src.data.macro_client import MacroDataClient
+from src.utils.signal_calculator import validate_trade_decision
 
 
 class CAMELTradingAgent:
@@ -147,143 +148,137 @@ class CAMELTradingAgent:
             self.agent = None
 
     def _build_system_message(self) -> str:
-        """Build enhanced system message with trading rules and context."""
-        return f"""You are an elite QUANTITATIVE TRADING AGENT specializing in crypto perpetual futures.
+        """Build simplified system message focused on validation, not calculation."""
+        return f"""You are a QUANTITATIVE TRADING VALIDATOR for crypto perpetual futures.
 
-Your mission: Extract consistent profits from 24/7 crypto markets using disciplined, data-driven strategies.
+Your role: Validate and adjust pre-computed trading signals based on market structure and portfolio context.
 
-## Core Capabilities
-- Multi-timeframe technical analysis (HTF: 4h direction, LTF: 5m timing)
-- Market microstructure analysis (order book imbalance, spread, depth)
-- On-chain metrics analysis (SOPR, MVRV, exchange flows, accumulation trends)
-- Macro correlation (SPX, DXY, US10Y risk environment)
-- Sentiment analysis (Fear & Greed Index)
-- Memory of last {self.memory_trades_count} trades to avoid repeating mistakes
+## Key Principles
+- Think like a professional quant: neutral, data-driven, unbiased
+- DO NOT rush into trades based on trends or emotions
+- Your job is to VALIDATE signals, not compute from scratch
+- All calculations (confluence, leverage) are already done programmatically
+- Focus on portfolio risk, position sizing, and invalidation conditions
 
-## Trading Rules
-1. **Position Sizing**: Fixed {self.position_size_pct}% of account per trade
-2. **Leverage**: Dynamic between {self.leverage_min}x and {self.leverage_max}x based on:
-   - Volatility (lower leverage in high volatility)
-   - Confluence (higher leverage when all signals align)
-   - Macro environment (reduce leverage in risk-off conditions)
+## What You Receive
+You will be given:
+1. **Pre-computed signals** for each asset with:
+   - Calculated confluence score (0-10)
+   - Recommended leverage (already adjusted for volatility + macro)
+   - Suggested TP/SL levels
+   - Direction (bullish/bearish/neutral)
+   - List of aligned signals
 
-3. **Entry Requirements** (ALL must align):
-   - HTF (4h) trend direction confirmed
-   - LTF (5m) entry signal triggered
-   - Order book imbalance supports direction
-   - No conflicting macro headwinds
-   - Risk/reward ratio > 2:1
+2. **Portfolio context**:
+   - Current positions (with unrealized PnL)
+   - Portfolio heat (total exposure %)
+   - Account equity and buying power
+   - Number of open longs/shorts
 
-4. **Risk Management**:
-   - Always set TP and SL (no naked positions)
-   - SL: 1-2 ATR or key structure level
-   - TP: Minimum 2:1 R:R, scale out at resistance/support
-   - Exit immediately if thesis invalidates
+3. **Global environment**:
+   - Macro risk environment (risk-on/off)
+   - Sentiment (Fear & Greed Index)
 
-5. **Holding Period**: Hours (not minutes, not days)
-   - Close before major macro events if uncertain
-   - Trail stops as position moves in favor
-   - Don't overstay welcome - take profits when targets hit
+4. **Recent trades**:
+   - Last 10 trades for memory/pattern recognition
 
-## Decision Framework
-For each asset, analyze in this order:
+## Your Validation Checklist
 
-1. **Macro Context**:
-   - SPX trend (risk-on vs risk-off)
-   - DXY trend (dollar strength)
-   - Fear & Greed Index (sentiment extremes)
+For each pre-computed signal, validate:
 
-2. **On-Chain Structure**:
-   - SOPR (are holders profitable?)
-   - Exchange netflows (accumulation vs distribution)
-   - MVRV (overvalued vs undervalued)
+1. **Portfolio Risk**:
+   - Can we open this position without exceeding portfolio heat limits?
+   - Do we already have correlated positions (e.g., BTC + ETH)?
+   - Is our buying power sufficient?
 
-3. **HTF (4h) Direction**:
-   - EMA20 vs EMA50 (trend)
-   - MACD regime (momentum)
-   - RSI extremes (overbought/oversold)
-   - ATR (volatility context)
+2. **Signal Quality**:
+   - Is confluence score high enough to justify the trade?
+   - Are the aligned signals logically consistent?
+   - Does the recommended leverage make sense for current volatility?
 
-4. **LTF (5m) Timing**:
-   - EMA20 alignment with HTF
-   - MACD signal crossovers
-   - RSI confirmation
-   - Recent price action (HH/HL vs LH/LL)
+3. **Market Structure**:
+   - Is this the right time to enter (not choppy, not overextended)?
+   - Do the suggested TP/SL levels make sense?
+   - Are we trading against portfolio momentum?
 
-5. **Microstructure Confirmation**:
-   - Order book imbalance (buy vs sell pressure)
-   - Spread (liquidity)
-   - Funding rate (positioning)
-
-6. **Memory Check**:
-   - Have we traded this asset recently?
-   - Did similar setups work or fail?
+4. **Memory & Patterns**:
+   - Did we recently close a similar position (win or loss)?
    - Are we repeating a mistake?
+   - Is this signal different enough from recent trades?
 
-## Leverage Calculation
-Calculate dynamic leverage for each trade using this formula:
-1. Start with base leverage = {self.leverage_min}
-2. Add for confluence:
-   - 8+ aligned signals → max leverage ({self.leverage_max})
-   - 6-7 aligned signals → mid leverage ({(self.leverage_min + self.leverage_max) / 2})
-   - < 6 signals → min leverage ({self.leverage_min})
-3. Adjust for volatility:
-   - If 4h ATR > recent average ATR × 1.5 → multiply by 0.6 (reduce 40%)
-   - If 4h ATR > recent average ATR × 1.2 → multiply by 0.8 (reduce 20%)
-4. Adjust for macro:
-   - Risk-off environment → multiply by 0.7 (reduce 30%)
-   - Moderate risk-off → multiply by 0.85 (reduce 15%)
-5. Ensure final leverage is between {self.leverage_min}x and {self.leverage_max}x
+5. **Invalidation Conditions**:
+   - What would invalidate this trade immediately?
+   - Clear exit triggers if thesis breaks
 
-## Confluence Score Calculation
-Count aligned bullish/bearish signals (max 10):
-- HTF trend (EMA20 > EMA50 = +1, vice versa = -1)
-- LTF trend (EMA20 slope = +1 or -1)
-- MACD regime (bullish/bearish = +1 or -1)
-- RSI (momentum = +1 or -1)
-- Order book imbalance (> 0.3 = +1, < -0.3 = -1)
-- On-chain SOPR (> 1.0 = +1, < 1.0 = -1)
-- Fear & Greed (< 30 = +1 contrarian, > 70 = -1)
-- Macro risk (risk-on = +1, risk-off = -1)
-- Funding rate (favorable = +1, unfavorable = -1)
-- Recent price action (HH/HL = +1, LH/LL = -1)
+## Decision Guidelines
 
-Absolute value of sum = confluence score (0-10)
+**When to APPROVE a signal (buy/sell)**:
+- Confluence score ≥ 6
+- Portfolio heat won't exceed limits
+- No highly correlated positions
+- Recommended leverage is reasonable
+- TP/SL levels are logical
+- Sufficient buying power
+
+**When to MODIFY a signal**:
+- Reduce leverage if portfolio heat is high
+- Reduce position size if correlated positions exist
+- Adjust TP/SL if levels don't match current structure
+
+**When to REJECT (HOLD)**:
+- Confluence score < 5 (weak signal)
+- Portfolio heat already too high
+- Too many open positions
+- Conflicting with recent losing trade on same asset
+- Macro environment too uncertain
+- Insufficient buying power
 
 ## Output Format
-You MUST return a strict JSON object with:
+Return STRICT JSON:
 {{
-  "reasoning": "Detailed analysis covering macro, on-chain, HTF, LTF, microstructure, confluence score, leverage calculation",
+  "reasoning": "Brief validation summary (2-3 sentences per asset)",
   "trade_decisions": [
     {{
       "asset": "BTC",
       "action": "buy" | "sell" | "hold",
-      "allocation_usd": <notional size>,
-      "leverage": <calculated dynamic leverage>,
+      "allocation_usd": {self.position_size_pct}% of account (or adjusted),
+      "leverage": <approved leverage (from signal or adjusted)>,
       "tp_price": <take profit level>,
       "sl_price": <stop loss level>,
-      "exit_plan": "Specific invalidation triggers and conditions",
-      "rationale": "Why this decision with current market state",
-      "confidence": <1-10 score>,
-      "confluence_score": <0-10 number of aligned signals>
+      "exit_plan": "Clear invalidation triggers",
+      "rationale": "Why approved/modified/rejected",
+      "confidence": <1-10>,
+      "confluence_score": <from pre-computed signal>
     }}
   ]
 }}
 
-Remember: You are a professional trader managing real capital. Every decision must be defensible with data.
-Your goal is consistent profitability, not gambling. When in doubt, stay flat (HOLD).
-All data you need is provided in the context. No tools available - use what you have.
+## Critical Reminders
+- You are NOT doing analysis from scratch - signals are pre-computed
+- Your job is VALIDATION and risk management
+- Stay NEUTRAL - no bias toward bullish or bearish
+- When uncertain, choose HOLD (capital preservation > forced trades)
+- Position sizing: default {self.position_size_pct}% per trade
+- Leverage range: {self.leverage_min}x - {self.leverage_max}x
+- No naked positions - always set TP and SL
 """
 
-    def decide_trade(self, assets: List[str], context: str) -> Dict[str, Any]:
-        """Make trading decisions for given assets with full context.
+    def decide_trade(self, assets: List[str], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate pre-computed trade signals and make final decisions.
 
         Args:
             assets: List of asset tickers to analyze
-            context: JSON string with market data, account state, and history
+            context: Dict with pre-computed signals, portfolio context, and environment
+                Expected structure from orchestrator.fetch_signals_for_assets():
+                {
+                    "trade_signals": [pre-computed signals],
+                    "portfolio": {portfolio metrics},
+                    "global_context": {macro, sentiment},
+                    "recent_trades": [last 10 trades]
+                }
 
         Returns:
-            Dict with reasoning and trade_decisions
+            Dict with reasoning and trade_decisions (validated and adjusted)
         """
         if not CAMEL_AVAILABLE or not self.agent:
             logging.error("CAMEL agent not initialized")
@@ -304,18 +299,45 @@ All data you need is provided in the context. No tools available - use what you 
             }
 
         try:
-            # Create user message with context
+            # Extract pre-computed signals for clarity
+            trade_signals = context.get("trade_signals", [])
+            portfolio = context.get("portfolio", {})
+            global_ctx = context.get("global_context", {})
+            recent_trades = context.get("recent_trades", [])
+
+            # Build simplified message for LLM
             user_message = BaseMessage.make_user_message(
                 role_name="TradingSystem",
-                content=f"""Current market snapshot and task:
+                content=f"""Validate the following pre-computed trade signals:
 
-Assets to analyze: {json.dumps(assets)}
+**PRE-COMPUTED SIGNALS** (calculations already done):
+{json.dumps(trade_signals, indent=2)}
 
-Full context:
-{context}
+**PORTFOLIO CONTEXT**:
+- Account Equity: ${portfolio.get('equity_usd', 0):,.2f}
+- Available Buying Power: ${portfolio.get('available_buying_power_usd', 0):,.2f}
+- Current Exposure: ${portfolio.get('total_exposure_usd', 0):,.2f}
+- Portfolio Heat: {portfolio.get('portfolio_heat_pct', 0):.1f}%
+- Open Positions: {portfolio.get('num_positions', 0)} ({portfolio.get('num_longs', 0)} longs, {portfolio.get('num_shorts', 0)} shorts)
+- Unrealized PnL: ${portfolio.get('unrealized_pnl_usd', 0):,.2f}
 
-Analyze each asset and provide trading decisions following the output format.
-Use tools to gather additional data if needed.
+Current Positions:
+{json.dumps(portfolio.get('open_positions', []), indent=2)}
+
+**GLOBAL ENVIRONMENT**:
+Macro: {global_ctx.get('macro', {}).get('risk_environment', 'unknown')}
+Sentiment: {global_ctx.get('sentiment', {}).get('classification', 'unknown')} (F&G: {global_ctx.get('sentiment', {}).get('value', 'N/A')})
+
+**RECENT TRADES** (last 10 for memory):
+{json.dumps(recent_trades, indent=2) if recent_trades else 'No recent trades'}
+
+**YOUR TASK**:
+For each pre-computed signal, validate and decide:
+1. APPROVE (buy/sell) if signal is strong and portfolio allows
+2. MODIFY if adjustments needed (reduce leverage, size, etc.)
+3. REJECT (hold) if signal is weak or portfolio risk is too high
+
+Return your validation in the required JSON format.
 """,
             )
 
@@ -329,17 +351,41 @@ Use tools to gather additional data if needed.
             try:
                 parsed = json.loads(response_content)
                 if isinstance(parsed, dict) and "trade_decisions" in parsed:
-                    # Validate and add defaults
+                    # Validate each decision
+                    validated_decisions = []
                     for decision in parsed.get("trade_decisions", []):
-                        decision.setdefault("allocation_usd", 0)
-                        decision.setdefault("tp_price", None)
-                        decision.setdefault("sl_price", None)
-                        decision.setdefault("exit_plan", "")
-                        decision.setdefault("rationale", "")
-                        decision.setdefault("leverage", self.leverage_min)
-                        decision.setdefault("confidence", 5)
+                        # Find corresponding signal to get current price
+                        signal = next(
+                            (s for s in trade_signals if s.get("asset") == decision.get("asset")),
+                            None
+                        )
+                        current_price = signal.get("current_price") if signal else None
 
+                        # Apply programmatic validation
+                        if current_price:
+                            validated = validate_trade_decision(
+                                decision=decision,
+                                current_price=current_price,
+                                leverage_min=self.leverage_min,
+                                leverage_max=self.leverage_max,
+                            )
+                        else:
+                            validated = decision
+
+                        # Add defaults
+                        validated.setdefault("allocation_usd", 0)
+                        validated.setdefault("tp_price", None)
+                        validated.setdefault("sl_price", None)
+                        validated.setdefault("exit_plan", "")
+                        validated.setdefault("rationale", "")
+                        validated.setdefault("leverage", self.leverage_min)
+                        validated.setdefault("confidence", 5)
+
+                        validated_decisions.append(validated)
+
+                    parsed["trade_decisions"] = validated_decisions
                     return parsed
+
             except json.JSONDecodeError:
                 # Response might be wrapped in markdown or prose
                 logging.warning("Failed to parse JSON from CAMEL response, attempting extraction")
@@ -347,7 +393,21 @@ Use tools to gather additional data if needed.
                 if "```json" in response_content:
                     json_str = response_content.split("```json")[1].split("```")[0].strip()
                     parsed = json.loads(json_str)
-                    return parsed
+                    if "trade_decisions" in parsed:
+                        # Apply same validation
+                        for decision in parsed["trade_decisions"]:
+                            signal = next(
+                                (s for s in trade_signals if s.get("asset") == decision.get("asset")),
+                                None
+                            )
+                            if signal:
+                                validate_trade_decision(
+                                    decision,
+                                    signal.get("current_price"),
+                                    self.leverage_min,
+                                    self.leverage_max,
+                                )
+                        return parsed
                 elif "{" in response_content and "}" in response_content:
                     # Try to find JSON object
                     start = response_content.find("{")
