@@ -187,13 +187,19 @@ class SignalCalculator:
         # Signal strength (-1 to +1)
         signal_strength = signal_sum / len(signal_values) if signal_values else 0
 
+        # Count bullish vs bearish signals (for transparency)
+        bullish_count = sum(1 for v in signal_values if v > 0)
+        bearish_count = sum(1 for v in signal_values if v < 0)
+
         return {
             "confluence_score": confluence_score,
             "direction": direction,
-            "aligned_signals": signals,
             "confidence": confidence,
             "signal_strength": signal_strength,  # -1 to +1
             "total_signals_checked": len(signal_values),
+            "bullish_signals": bullish_count,
+            "bearish_signals": bearish_count,
+            # Removed: aligned_signals (redundant, reduces tokens by ~400 chars per asset)
         }
 
     def calculate_dynamic_leverage(
@@ -225,13 +231,16 @@ class SignalCalculator:
                 - macro_adjustment: Multiplier applied
                 - reasoning: Explanation of calculation
         """
-        # Step 1: Base leverage from confluence
+        # Step 1: Base leverage from confluence (conservative approach)
+        # Never use max leverage - leaves no room for error
         if confluence_score >= 8:
-            base_leverage = self.leverage_max  # High conviction
+            base_leverage = self.leverage_max * 0.8  # 80% of max (e.g., 8x if max is 10x)
         elif confluence_score >= 6:
             base_leverage = (self.leverage_min + self.leverage_max) / 2  # Medium
+        elif confluence_score >= 4:
+            base_leverage = self.leverage_min * 1.2  # Slightly above min
         else:
-            base_leverage = self.leverage_min  # Low conviction
+            base_leverage = self.leverage_min  # Min leverage for weak signals
 
         # Step 2: Volatility adjustment
         volatility_multiplier = 1.0
@@ -395,14 +404,29 @@ class SignalCalculator:
         if macro.get("risk_environment"):
             parts.append(f"macro: {macro['risk_environment']}")
 
-        # Microstructure
+        # Microstructure (order book + liquidity)
         micro = data.get("microstructure", {})
         if micro.get("imbalance") is not None:
             imb = micro["imbalance"]
+            spread_bps = micro.get("spread_bps", 0)
+
+            # Imbalance signal
             if imb > 0.3:
-                parts.append("order book: BUY PRESSURE")
+                imb_str = "BUY PRESSURE"
             elif imb < -0.3:
-                parts.append("order book: SELL PRESSURE")
+                imb_str = "SELL PRESSURE"
+            else:
+                imb_str = "BALANCED"
+
+            # Liquidity signal (spread)
+            if spread_bps > 20:
+                liq_str = "LOW LIQUIDITY"
+            elif spread_bps > 10:
+                liq_str = "MODERATE LIQUIDITY"
+            else:
+                liq_str = "GOOD LIQUIDITY"
+
+            parts.append(f"order book: {imb_str}, {liq_str}")
 
         return ", ".join(parts) if parts else "insufficient data"
 

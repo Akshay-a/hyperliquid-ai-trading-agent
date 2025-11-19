@@ -386,8 +386,9 @@ class DataOrchestrator:
                 "sentiment": market_data.get("sentiment"),
             },
 
-            # Recent trades (for memory)
+            # Recent trades (for memory) with performance summary
             "recent_trades": recent_diary[-10:] if recent_diary else [],  # Last 10 trades
+            "recent_performance": self._calculate_recent_performance(recent_diary),
 
             # Metadata
             "fetch_time_ms": market_data.get("fetch_time_ms"),
@@ -395,6 +396,17 @@ class DataOrchestrator:
             # Raw data (for debugging, not for LLM)
             "raw_data": market_data,
         }
+
+        # Estimate token count (rough: 4 chars = 1 token)
+        import json
+        context_str = json.dumps(context, default=str)
+        estimated_tokens = len(context_str) // 4
+
+        # Warn if context is getting large
+        if estimated_tokens > 3000:
+            logging.warning(f"⚠️  Large context: ~{estimated_tokens} tokens. Consider reducing recent_trades or signals.")
+
+        context["_estimated_tokens"] = estimated_tokens
 
         return context
 
@@ -462,4 +474,66 @@ class DataOrchestrator:
             "num_shorts": num_shorts,
             "open_positions": position_assets,
             "available_buying_power_usd": round(withdrawable, 2),
+        }
+
+    def _calculate_recent_performance(
+        self,
+        recent_diary: List[Dict[str, Any]],
+        lookback: int = 20,
+    ) -> Dict[str, Any]:
+        """Calculate performance metrics from recent trades to prevent recency bias.
+
+        Args:
+            recent_diary: List of all trades
+            lookback: Number of recent trades to analyze
+
+        Returns:
+            Dict with win rate, avg profit, total trades
+        """
+        if not recent_diary:
+            return {
+                "total_trades": 0,
+                "win_rate_pct": 0,
+                "avg_pnl_pct": 0,
+                "recent_streak": "No trades yet",
+            }
+
+        # Get last N trades
+        recent = recent_diary[-lookback:] if len(recent_diary) > lookback else recent_diary
+
+        wins = 0
+        losses = 0
+        total_pnl_pct = 0
+        last_3_results = []
+
+        for trade in recent:
+            pnl = trade.get("pnl", 0)
+            entry = trade.get("entry_price", 1)
+
+            if pnl > 0:
+                wins += 1
+                last_3_results.append("W")
+            elif pnl < 0:
+                losses += 1
+                last_3_results.append("L")
+
+            # Calculate % PnL
+            if entry > 0:
+                pnl_pct = (pnl / entry) * 100
+                total_pnl_pct += pnl_pct
+
+        total_trades = wins + losses
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        avg_pnl_pct = (total_pnl_pct / total_trades) if total_trades > 0 else 0
+
+        # Streak (last 3 trades)
+        streak = "".join(last_3_results[-3:]) if last_3_results else "No recent trades"
+
+        return {
+            "total_trades": total_trades,
+            "wins": wins,
+            "losses": losses,
+            "win_rate_pct": round(win_rate, 1),
+            "avg_pnl_pct": round(avg_pnl_pct, 2),
+            "recent_streak": streak,  # e.g., "WWL" = 2 wins, 1 loss
         }

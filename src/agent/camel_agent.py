@@ -163,11 +163,12 @@ Your role: Validate and adjust pre-computed trading signals based on market stru
 ## What You Receive
 You will be given:
 1. **Pre-computed signals** for each asset with:
-   - Calculated confluence score (0-10)
+   - Calculated confluence score (0-10 = alignment strength)
+   - Direction (bullish/bearish/neutral)
+   - Signal breakdown: X bullish signals vs Y bearish signals (transparency!)
    - Recommended leverage (already adjusted for volatility + macro)
    - Suggested TP/SL levels
-   - Direction (bullish/bearish/neutral)
-   - List of aligned signals
+   - Market summary (trend, volatility, liquidity)
 
 2. **Portfolio context**:
    - Current positions (with unrealized PnL)
@@ -179,8 +180,11 @@ You will be given:
    - Macro risk environment (risk-on/off)
    - Sentiment (Fear & Greed Index)
 
-4. **Recent trades**:
-   - Last 10 trades for memory/pattern recognition
+4. **Recent performance** (to prevent recency bias):
+   - Win rate % over last 20 trades
+   - Recent streak (e.g., "WWL" = 2 wins, 1 loss)
+   - Average PnL %
+   - IMPORTANT: Do NOT over-react to recent streaks (normal variance)
 
 ## Your Validation Checklist
 
@@ -193,7 +197,8 @@ For each pre-computed signal, validate:
 
 2. **Signal Quality**:
    - Is confluence score high enough to justify the trade?
-   - Are the aligned signals logically consistent?
+   - Check bullish vs bearish signal counts - are there significant conflicts?
+   - Example: 6 bullish + 4 bearish = low confidence despite confluence=2
    - Does the recommended leverage make sense for current volatility?
 
 3. **Market Structure**:
@@ -304,6 +309,7 @@ Return STRICT JSON:
             portfolio = context.get("portfolio", {})
             global_ctx = context.get("global_context", {})
             recent_trades = context.get("recent_trades", [])
+            recent_perf = context.get("recent_performance", {})
 
             # Build simplified message for LLM
             user_message = BaseMessage.make_user_message(
@@ -328,8 +334,11 @@ Current Positions:
 Macro: {global_ctx.get('macro', {}).get('risk_environment', 'unknown')}
 Sentiment: {global_ctx.get('sentiment', {}).get('classification', 'unknown')} (F&G: {global_ctx.get('sentiment', {}).get('value', 'N/A')})
 
-**RECENT TRADES** (last 10 for memory):
-{json.dumps(recent_trades, indent=2) if recent_trades else 'No recent trades'}
+**RECENT PERFORMANCE** (last 20 trades):
+- Win Rate: {recent_perf.get('win_rate_pct', 0):.1f}% ({recent_perf.get('wins', 0)}W / {recent_perf.get('losses', 0)}L)
+- Recent Streak: {recent_perf.get('recent_streak', 'N/A')} (W=win, L=loss)
+- Avg PnL per trade: {recent_perf.get('avg_pnl_pct', 0):.2f}%
+REMINDER: Do not over-react to streaks - they are normal variance.
 
 **YOUR TASK**:
 For each pre-computed signal, validate and decide:
