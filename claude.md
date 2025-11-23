@@ -259,12 +259,14 @@ INTERVAL="5m"                  # 5-minute checks
 ```bash
 # Required
 HYPERLIQUID_PRIVATE_KEY=0x...  # Your wallet
-OPENROUTER_API_KEY=sk-...      # LLM access
+GROQ_API_KEY=gsk_...           # LLM access (https://console.groq.com)
 TAAPI_API_KEY=...              # Technical indicators
 
 # Optional (but recommended)
 GLASSNODE_API_KEY=...          # On-chain metrics for BTC/ETH
 ```
+
+**Note**: Using Groq with Llama 3.3 70B for fast, open source inference. Alternative: OpenRouter (see .env.example).
 
 ### Full Configuration
 

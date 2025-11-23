@@ -136,7 +136,7 @@ cp .env.example .env
 
 **Required API Keys**:
 - `HYPERLIQUID_PRIVATE_KEY` - Your Ethereum wallet private key ([Get one](https://metamask.io/))
-- `OPENROUTER_API_KEY` - LLM access ([Sign up](https://openrouter.ai/))
+- `GROQ_API_KEY` - Fast LLM inference ([Sign up](https://console.groq.com/))
 - `TAAPI_API_KEY` - Technical indicators ([Sign up](https://taapi.io/))
 
 **Optional (Recommended)**:

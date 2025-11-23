@@ -86,12 +86,14 @@ CONFIG = {
     # Hyperliquid network/base URL overrides
     "hyperliquid_base_url": _get_env("HYPERLIQUID_BASE_URL"),
     "hyperliquid_network": _get_env("HYPERLIQUID_NETWORK", "mainnet"),
-    # LLM via OpenRouter
-    "openrouter_api_key": _get_env("OPENROUTER_API_KEY", required=True),
+    # LLM Provider - Groq (fast OSS inference) or OpenRouter (fallback)
+    "groq_api_key": _get_env("GROQ_API_KEY"),
+    "openrouter_api_key": _get_env("OPENROUTER_API_KEY"),
     "openrouter_base_url": _get_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
     "openrouter_referer": _get_env("OPENROUTER_REFERER"),
     "openrouter_app_title": _get_env("OPENROUTER_APP_TITLE", "trading-agent"),
-    "llm_model": _get_env("LLM_MODEL", "x-ai/grok-4"),
+    # Default to Groq Llama 3.3 70B (fast, open source)
+    "llm_model": _get_env("LLM_MODEL", "groq/llama-3.3-70b-versatile"),
     # Reasoning tokens
     "reasoning_enabled": _get_bool("REASONING_ENABLED", False),
     "reasoning_effort": _get_env("REASONING_EFFORT", "high"),

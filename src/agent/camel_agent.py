@@ -71,32 +71,48 @@ class CAMELTradingAgent:
         """Initialize the LLM model through CAMEL's ModelFactory."""
         try:
             # Parse model platform from model name
-            # E.g., "openai/gpt-4" -> platform=OpenAI, model=gpt-4
+            # E.g., "groq/llama-3.3-70b-versatile" -> platform=GROQ
+            # E.g., "openai/gpt-4" -> platform=OpenAI
             # E.g., "anthropic/claude-3-5-sonnet" -> platform=Anthropic
-            # E.g., "x-ai/grok-4" -> platform=OpenAI (via OpenRouter)
 
             model_str = self.model_name.lower()
 
-            if "gpt" in model_str or "openai" in model_str:
-                platform = ModelPlatformType.OPENAI
+            # Groq - fast inference for open source models
+            if "groq" in model_str or "llama" in model_str or "mixtral" in model_str:
+                platform = ModelPlatformType.GROQ
                 # Extract model name after slash
                 model_type_str = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
+
+                # Groq configuration
+                model_config_extra = {
+                    "api_key": CONFIG.get("groq_api_key"),
+                }
+
+            elif "gpt" in model_str or "openai" in model_str:
+                platform = ModelPlatformType.OPENAI
+                model_type_str = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
+                model_config_extra = {}
+
             elif "claude" in model_str or "anthropic" in model_str:
                 platform = ModelPlatformType.ANTHROPIC
                 model_type_str = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
+                model_config_extra = {}
+
             elif "gemini" in model_str:
                 platform = ModelPlatformType.GEMINI
                 model_type_str = self.model_name.split("/")[-1] if "/" in self.model_name else self.model_name
+                model_config_extra = {}
+
             else:
                 # Default to OpenAI-compatible (works with OpenRouter)
                 platform = ModelPlatformType.OPENAI
                 model_type_str = self.model_name
+                model_config_extra = {}
 
-            # For OpenRouter, we'll use the base URL override
-            model_config_extra = {}
-            if CONFIG.get("openrouter_base_url"):
-                model_config_extra["base_url"] = f"{CONFIG['openrouter_base_url']}/chat/completions"
-                model_config_extra["api_key"] = CONFIG.get("openrouter_api_key")
+                # For OpenRouter, use base URL override
+                if CONFIG.get("openrouter_base_url"):
+                    model_config_extra["base_url"] = f"{CONFIG['openrouter_base_url']}/chat/completions"
+                    model_config_extra["api_key"] = CONFIG.get("openrouter_api_key")
 
             self.model = ModelFactory.create(
                 model_platform=platform,
@@ -104,7 +120,7 @@ class CAMELTradingAgent:
                 model_config_dict=model_config_extra if model_config_extra else None,
             )
 
-            logging.info(f"CAMEL model initialized: {self.model_name}")
+            logging.info(f"CAMEL model initialized: {self.model_name} (platform: {platform})")
 
         except Exception as e:
             logging.error(f"Failed to initialize CAMEL model: {e}")
