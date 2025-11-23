@@ -14,12 +14,25 @@ class TAAPIClient:
         """Initialize TAAPI credentials and base URL."""
         self.api_key = CONFIG["taapi_api_key"]
         self.base_url = "https://api.taapi.io/"
+        # Rate limiting for free tier (1 request per 15 seconds)
+        # Set TAAPI_RATE_LIMIT=0 for paid tiers
+        self.rate_limit_delay = float(os.getenv("TAAPI_RATE_LIMIT", "0"))
+        self._last_request_time = 0
 
     def _get_with_retry(self, url, params, retries=3, backoff=0.5):
         """Perform a GET request with exponential backoff retry logic."""
+        # Enforce rate limiting for free tier
+        if self.rate_limit_delay > 0:
+            elapsed = time.time() - self._last_request_time
+            if elapsed < self.rate_limit_delay:
+                wait_time = self.rate_limit_delay - elapsed
+                logging.debug(f"Rate limiting: waiting {wait_time:.1f}s before TAAPI request")
+                time.sleep(wait_time)
+
         for attempt in range(retries):
             try:
                 resp = requests.get(url, params=params, timeout=10)
+                self._last_request_time = time.time()
                 resp.raise_for_status()
                 return resp.json()
             except requests.HTTPError as e:
